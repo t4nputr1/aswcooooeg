@@ -5,7 +5,7 @@ export PATH
 #   System Supported:  CentOS 6+ / Debian 7+ / Ubuntu 12+               #
 #   Description: L2TP VPN Auto Installer                                #
 #   Author: Teddysun <i@teddysun.com>                                   #
-#   Remod By:  https://sshinjetor.net                                   #
+#   Remod By:  https://www.sshinjector.net                              #
 #=======================================================================#
 cur_dir=`pwd`
 
@@ -227,8 +227,8 @@ preinstall_l2tp(){
     [ -z ${iprange} ] && iprange="192.168.18"
 
     echo "Please enter PSK:"
-    read -p "(Default PSK: sshinjetor.net):" mypsk
-    [ -z ${mypsk} ] && mypsk="sshinjetor.net"
+    read -p "(Default PSK: sshinjector.net):" mypsk
+    [ -z ${mypsk} ] && mypsk="sshinjector.net"
 
     echo "Please enter Username:"
     read -p "(Default Username: mfauzan57):" username
@@ -654,7 +654,7 @@ finally(){
     echo "###############################################################"
     echo "# L2TP VPN Auto Installer                                     #"
     echo "# System Supported: CentOS 6+ / Debian 7+ / Ubuntu 12+        #"
-    echo "# Intro: https://teddysun.com/448.html                        #"
+    echo "# Remod By: https://www.sshinjector.net                       #"
     echo "# Author: Teddysun <i@teddysun.com>                           #"
     echo "###############################################################"
     echo "If there is no [FAILED] above, you can connect to your L2TP "
@@ -671,7 +671,7 @@ finally(){
     echo "l2tp -l (List all users)"
     echo "l2tp -m (Modify a user password)"
     echo
-    echo "Welcome to visit our website: https://teddysun.com/448.html"
+    echo "Welcome to visit our website: https://www.sshinjector.net"
     echo "Enjoy it!"
     echo
 }
