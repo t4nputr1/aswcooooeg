@@ -5,8 +5,6 @@ export PATH
 #=======================================================================#
 #   System Supported:  CentOS 6+ / Debian 7+ / Ubuntu 12+               #
 #   Description: L2TP VPN Auto Installer                                #
-#   Author: Teddysun <i@teddysun.com>                                   #
-#   Intro:  https://teddysun.com/448.html                               #
 #=======================================================================#
 cur_dir=`pwd`
 
@@ -236,10 +234,9 @@ preinstall_l2tp(){
     read -p "(Default Username: mfauzan57):" username
     [ -z ${username} ] && username="mfauzan57"
 
-    password=`rand`
     echo "Please enter ${username}'s password:"
-    read -p "(Default Password: ${password}):" tmppassword
-    [ -z ${tmppassword} ] && password=${mfauzan57}
+    read -p "(Default Password: mfauzan57):" tmppassword
+    [ -z ${tmppassword} ] && password="mfauzan57"
 
     echo
     echo "ServerIP:${IP}"
