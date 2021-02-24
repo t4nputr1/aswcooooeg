@@ -1,375 +1,493 @@
 #!/bin/sh
+#
+# Script for automatic setup of an IPsec VPN server on Ubuntu LTS and Debian.
+# Works on any dedicated server or virtual private server (VPS) except OpenVZ.
+#
+# DO NOT RUN THIS SCRIPT ON YOUR PC OR MAC!
+#
+# The latest version of this script is available at:
+# https://github.com/hwdsl2/setup-ipsec-vpn
+#
+# Copyright (C) 2014-2018 Lin Song <linsongui@gmail.com>
+# Based on the work of Thomas Sarlandie (Copyright 2012)
+#
+# This work is licensed under the Creative Commons Attribution-ShareAlike 3.0
+# Unported License: http://creativecommons.org/licenses/by-sa/3.0/
+#
+# Attribution required: please include my name in any derivative and let me
+# know how you have improved it!
 
-# initialisasi var
+# =====================================================
+
+# Define your own values for these variables
+# - IPsec pre-shared key, VPN username and password
+# - All values MUST be placed inside 'single quotes'
+# - DO NOT use these special characters within values: \ " '
+
+YOUR_IPSEC_PSK='sshinjector.net'
+YOUR_USERNAME='mfauzan'
+YOUR_PASSWORD='55555'
+
+# Important notes:   https://git.io/vpnnotes
+# Setup VPN clients: https://git.io/vpnclients
+
+# =====================================================
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+SYS_DT="$(date +%F-%T)"
+
+exiterr()  { echo "Error: $1" >&2; exit 1; }
+exiterr2() { exiterr "'apt-get install' failed."; }
+conf_bk() { /bin/cp -f "$1" "$1.old-$SYS_DT" 2>/dev/null; }
+bigecho() { echo; echo "## $1"; echo; }
+
+check_ip() {
+  IP_REGEX='^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$'
+  printf '%s' "$1" | tr -d '\n' | grep -Eq "$IP_REGEX"
+}
+
+vpnsetup() {
+
+os_type="$(lsb_release -si 2>/dev/null)"
+if [ -z "$os_type" ]; then
+  [ -f /etc/os-release  ] && os_type="$(. /etc/os-release  && echo "$ID")"
+  [ -f /etc/lsb-release ] && os_type="$(. /etc/lsb-release && echo "$DISTRIB_ID")"
+fi
+if ! printf '%s' "$os_type" | head -n 1 | grep -qiF -e ubuntu -e debian -e raspbian; then
+  exiterr "This script only supports Ubuntu and Debian."
+fi
+
+if [ "$(sed 's/\..*//' /etc/debian_version)" = "7" ]; then
+  exiterr "Debian 7 is not supported."
+fi
+
+if [ -f /proc/user_beancounters ]; then
+  exiterr "OpenVZ VPS is not supported. Try OpenVPN: github.com/Nyr/openvpn-install"
+fi
+
+if [ "$(id -u)" != 0 ]; then
+  exiterr "Script must be run as root. Try 'sudo sh $0'"
+fi
+
+net_iface=${VPN_NET_IFACE:-'eth0'}
+def_iface="$(route 2>/dev/null | grep '^default' | grep -o '[^ ]*$')"
+[ -z "$def_iface" ] && def_iface="$(ip -4 route list 0/0 2>/dev/null | grep -Po '(?<=dev )(\S+)')"
+
+def_state=$(cat "/sys/class/net/$def_iface/operstate" 2>/dev/null)
+if [ -n "$def_state" ] && [ "$def_state" != "down" ]; then
+  if ! uname -m | grep -qi '^arm'; then
+    case "$def_iface" in
+      wl*)
+        exiterr "Wireless interface '$def_iface' detected. DO NOT run this script on your PC or Mac!"
+        ;;
+    esac
+  fi
+  net_iface="$def_iface"
+fi
+
+net_state=$(cat "/sys/class/net/$net_iface/operstate" 2>/dev/null)
+if [ -z "$net_state" ] || [ "$net_state" = "down" ] || [ "$net_iface" = "lo" ]; then
+  printf "Error: Network interface '%s' is not available.\n" "$net_iface" >&2
+  if [ -z "$VPN_NET_IFACE" ]; then
+cat 1>&2 <<EOF
+Could not detect the default network interface. Re-run this script with:
+  sudo VPN_NET_IFACE="default_interface_name" sh "$0"
+EOF
+  fi
+  exit 1
+fi
+
+[ -n "$YOUR_IPSEC_PSK" ] && VPN_IPSEC_PSK="$YOUR_IPSEC_PSK"
+[ -n "$YOUR_USERNAME" ] && VPN_USER="$YOUR_USERNAME"
+[ -n "$YOUR_PASSWORD" ] && VPN_PASSWORD="$YOUR_PASSWORD"
+
+if [ -z "$VPN_IPSEC_PSK" ] && [ -z "$VPN_USER" ] && [ -z "$VPN_PASSWORD" ]; then
+  bigecho "VPN credentials not set by user. Generating random PSK and password..."
+  VPN_IPSEC_PSK="$(LC_CTYPE=C tr -dc 'A-HJ-NPR-Za-km-z2-9' < /dev/urandom | head -c 16)"
+  VPN_USER=vpnuser
+  VPN_PASSWORD="$(LC_CTYPE=C tr -dc 'A-HJ-NPR-Za-km-z2-9' < /dev/urandom | head -c 16)"
+fi
+
+if [ -z "$VPN_IPSEC_PSK" ] || [ -z "$VPN_USER" ] || [ -z "$VPN_PASSWORD" ]; then
+  exiterr "All VPN credentials must be specified. Edit the script and re-enter them."
+fi
+
+if printf '%s' "$VPN_IPSEC_PSK $VPN_USER $VPN_PASSWORD" | LC_ALL=C grep -q '[^ -~]\+'; then
+  exiterr "VPN credentials must not contain non-ASCII characters."
+fi
+
+case "$VPN_IPSEC_PSK $VPN_USER $VPN_PASSWORD" in
+  *[\\\"\']*)
+    exiterr "VPN credentials must not contain these special characters: \\ \" '"
+    ;;
+esac
+
+bigecho "VPN setup in progress... Please be patient."
+
+# Create and change to working dir
+mkdir -p /opt/src
+cd /opt/src || exit 1
+
+count=0
+APT_LK=/var/lib/apt/lists/lock
+PKG_LK=/var/lib/dpkg/lock
+while fuser "$APT_LK" "$PKG_LK" >/dev/null 2>&1 \
+  || lsof "$APT_LK" >/dev/null 2>&1 || lsof "$PKG_LK" >/dev/null 2>&1; do
+  [ "$count" = "0" ] && bigecho "Waiting for apt to be available..."
+  [ "$count" -ge "60" ] && exiterr "Could not get apt/dpkg lock."
+  count=$((count+1))
+  printf '%s' '.'
+  sleep 3
+done
+
+bigecho "Populating apt-get cache..."
+
 export DEBIAN_FRONTEND=noninteractive
-OS=`uname -m`;
-MYIP=`ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0'`;
-MYIP2="s/xxxxxxxxx/$MYIP/g";
+apt-get -yq update || exiterr "'apt-get update' failed."
 
-apt-get update && apt-get upgrade -y
-apt-get install wget curl -y
+bigecho "Installing packages required for setup..."
 
-# Edit file /etc/systemd/system/rc-local.service
-cat > /etc/systemd/system/rc-local.service <<-END
-[Unit]
-Description=/etc/rc.local
-ConditionPathExists=/etc/rc.local
-[Service]
-Type=forking
-ExecStart=/etc/rc.local start
-TimeoutSec=0
-StandardOutput=tty
-RemainAfterExit=yes
-SysVStartPriority=99
-[Install]
-WantedBy=multi-user.target
-END
+apt-get -yq install wget dnsutils openssl \
+  iptables iproute2 gawk grep sed net-tools || exiterr2
 
-# nano /etc/rc.local
-cat > /etc/rc.local <<-END
-#!/bin/sh -e
-# rc.local
-# By default this script does nothing.
+bigecho "Trying to auto discover IP of this server..."
+
+cat <<'EOF'
+In case the script hangs here for more than a few minutes,
+press Ctrl-C to abort. Then edit it and manually enter IP.
+EOF
+
+# In case auto IP discovery fails, enter server's public IP here.
+PUBLIC_IP=${VPN_PUBLIC_IP:-''}
+
+[ -z "$PUBLIC_IP" ] && PUBLIC_IP=$(dig @resolver1.opendns.com -t A -4 myip.opendns.com +short)
+
+check_ip "$PUBLIC_IP" || PUBLIC_IP=$(wget -t 3 -T 15 -qO- http://ipv4.icanhazip.com)
+check_ip "$PUBLIC_IP" || exiterr "Cannot detect this server's public IP. Edit the script and manually enter it."
+
+bigecho "Installing packages required for the VPN..."
+
+apt-get -yq install libnss3-dev libnspr4-dev pkg-config \
+  libpam0g-dev libcap-ng-dev libcap-ng-utils libselinux1-dev \
+  libcurl4-nss-dev flex bison gcc make libnss3-tools \
+  libevent-dev ppp xl2tpd || exiterr2
+
+case "$(uname -r)" in
+  4.14*|4.15*)
+    L2TP_VER=1.3.12
+    l2tp_file="xl2tpd-$L2TP_VER.tar.gz"
+    l2tp_url1="https://github.com/xelerance/xl2tpd/archive/v$L2TP_VER.tar.gz"
+    l2tp_url2="https://mirrors.kernel.org/ubuntu/pool/universe/x/xl2tpd/xl2tpd_$L2TP_VER.orig.tar.gz"
+    apt-get -yq install libpcap0.8-dev || exiterr2
+    if ! { wget -t 3 -T 30 -nv -O "$l2tp_file" "$l2tp_url1" || wget -t 3 -T 30 -nv -O "$l2tp_file" "$l2tp_url2"; }; then
+      exit 1
+    fi
+    /bin/rm -rf "/opt/src/xl2tpd-$L2TP_VER"
+    tar xzf "$l2tp_file" && /bin/rm -f "$l2tp_file"
+    cd "xl2tpd-$L2TP_VER" && make -s 2>/dev/null && PREFIX=/usr make -s install
+    cd /opt/src || exit 1
+    /bin/rm -rf "/opt/src/xl2tpd-$L2TP_VER"
+    ;;
+esac
+
+bigecho "Installing Fail2Ban to protect SSH..."
+
+apt-get -yq install fail2ban || exiterr2
+
+bigecho "Compiling and installing Libreswan..."
+
+SWAN_VER=3.22
+swan_file="libreswan-$SWAN_VER.tar.gz"
+swan_url1="https://github.com/libreswan/libreswan/archive/v$SWAN_VER.tar.gz"
+swan_url2="https://download.libreswan.org/$swan_file"
+if ! { wget -t 3 -T 30 -nv -O "$swan_file" "$swan_url1" || wget -t 3 -T 30 -nv -O "$swan_file" "$swan_url2"; }; then
+  exit 1
+fi
+/bin/rm -rf "/opt/src/libreswan-$SWAN_VER"
+tar xzf "$swan_file" && /bin/rm -f "$swan_file"
+cd "libreswan-$SWAN_VER" || exit 1
+sed -i '/^#define LSWBUF_CANARY/s/-2$/((char) -2)/' include/lswlog.h
+cat > Makefile.inc.local <<'EOF'
+WERROR_CFLAGS =
+USE_DNSSEC = false
+EOF
+if [ "$(packaging/utils/lswan_detect.sh init)" = "systemd" ]; then
+  apt-get -yq install libsystemd-dev || exiterr2
+fi
+NPROCS="$(grep -c ^processor /proc/cpuinfo)"
+[ -z "$NPROCS" ] && NPROCS=1
+make "-j$((NPROCS+1))" -s base && make -s install-base
+
+cd /opt/src || exit 1
+/bin/rm -rf "/opt/src/libreswan-$SWAN_VER"
+if ! /usr/local/sbin/ipsec --version 2>/dev/null | grep -qF "$SWAN_VER"; then
+  exiterr "Libreswan $SWAN_VER failed to build."
+fi
+
+bigecho "Creating VPN configuration..."
+
+L2TP_NET=${VPN_L2TP_NET:-'192.168.42.0/24'}
+L2TP_LOCAL=${VPN_L2TP_LOCAL:-'192.168.42.1'}
+L2TP_POOL=${VPN_L2TP_POOL:-'192.168.42.10-192.168.42.250'}
+XAUTH_NET=${VPN_XAUTH_NET:-'192.168.43.0/24'}
+XAUTH_POOL=${VPN_XAUTH_POOL:-'192.168.43.10-192.168.43.250'}
+DNS_SRV1=${VPN_DNS_SRV1:-'8.8.8.8'}
+DNS_SRV2=${VPN_DNS_SRV2:-'8.8.4.4'}
+
+# Create IPsec config
+conf_bk "/etc/ipsec.conf"
+cat > /etc/ipsec.conf <<EOF
+version 2.0
+config setup
+  virtual-private=%v4:10.0.0.0/8,%v4:192.168.0.0/16,%v4:172.16.0.0/12,%v4:!$L2TP_NET,%v4:!$XAUTH_NET
+  protostack=netkey
+  interfaces=%defaultroute
+  uniqueids=no
+conn shared
+  left=%defaultroute
+  leftid=$PUBLIC_IP
+  right=%any
+  encapsulation=yes
+  authby=secret
+  pfs=no
+  rekey=no
+  keyingtries=5
+  dpddelay=30
+  dpdtimeout=120
+  dpdaction=clear
+  ike=3des-sha1,3des-sha2,aes-sha1,aes-sha1;modp1024,aes-sha2,aes-sha2;modp1024
+  phase2alg=3des-sha1,3des-sha2,aes-sha1,aes-sha2,aes256-sha2_512
+  sha2-truncbug=yes
+conn l2tp-psk
+  auto=add
+  leftprotoport=17/1701
+  rightprotoport=17/%any
+  type=transport
+  phase2=esp
+  also=shared
+conn xauth-psk
+  auto=add
+  leftsubnet=0.0.0.0/0
+  rightaddresspool=$XAUTH_POOL
+  modecfgdns1=$DNS_SRV1
+  modecfgdns2=$DNS_SRV2
+  leftxauthserver=yes
+  rightxauthclient=yes
+  leftmodecfgserver=yes
+  rightmodecfgclient=yes
+  modecfgpull=yes
+  xauthby=file
+  ike-frag=yes
+  ikev2=never
+  cisco-unity=yes
+  also=shared
+EOF
+
+if ip -4 route list 0/0 2>/dev/null | grep -qs ' src '; then
+  PRIVATE_IP=$(ip -4 route get 1 | sed 's/ uid .*//' | awk '{print $NF;exit}')
+  check_ip "$PRIVATE_IP" && sed -i "s/left=%defaultroute/left=$PRIVATE_IP/" /etc/ipsec.conf
+fi
+
+if uname -m | grep -qi '^arm'; then
+  sed -i '/phase2alg/s/,aes256-sha2_512//' /etc/ipsec.conf
+fi
+
+# Specify IPsec PSK
+conf_bk "/etc/ipsec.secrets"
+cat > /etc/ipsec.secrets <<EOF
+%any  %any  : PSK "$VPN_IPSEC_PSK"
+EOF
+
+# Create xl2tpd config
+conf_bk "/etc/xl2tpd/xl2tpd.conf"
+cat > /etc/xl2tpd/xl2tpd.conf <<EOF
+[global]
+port = 1701
+[lns default]
+ip range = $L2TP_POOL
+local ip = $L2TP_LOCAL
+require chap = yes
+refuse pap = yes
+require authentication = yes
+name = l2tpd
+pppoptfile = /etc/ppp/options.xl2tpd
+length bit = yes
+EOF
+
+# Set xl2tpd options
+conf_bk "/etc/ppp/options.xl2tpd"
+cat > /etc/ppp/options.xl2tpd <<EOF
++mschap-v2
+ipcp-accept-local
+ipcp-accept-remote
+ms-dns $DNS_SRV1
+ms-dns $DNS_SRV2
+noccp
+auth
+mtu 1280
+mru 1280
+proxyarp
+lcp-echo-failure 4
+lcp-echo-interval 30
+connect-delay 5000
+EOF
+
+# Create VPN credentials
+conf_bk "/etc/ppp/chap-secrets"
+cat > /etc/ppp/chap-secrets <<EOF
+"$VPN_USER" l2tpd "$VPN_PASSWORD" *
+EOF
+
+conf_bk "/etc/ipsec.d/passwd"
+VPN_PASSWORD_ENC=$(openssl passwd -1 "$VPN_PASSWORD")
+cat > /etc/ipsec.d/passwd <<EOF
+$VPN_USER:$VPN_PASSWORD_ENC:xauth-psk
+EOF
+
+bigecho "Updating sysctl settings..."
+
+if ! grep -qs "hwdsl2 VPN script" /etc/sysctl.conf; then
+  conf_bk "/etc/sysctl.conf"
+  if [ "$(getconf LONG_BIT)" = "64" ]; then
+    SHM_MAX=68719476736
+    SHM_ALL=4294967296
+  else
+    SHM_MAX=4294967295
+    SHM_ALL=268435456
+  fi
+cat >> /etc/sysctl.conf <<EOF
+# Added by hwdsl2 VPN script
+kernel.msgmnb = 65536
+kernel.msgmax = 65536
+kernel.shmmax = $SHM_MAX
+kernel.shmall = $SHM_ALL
+net.ipv4.ip_forward = 1
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.default.rp_filter = 0
+net.ipv4.conf.$net_iface.send_redirects = 0
+net.ipv4.conf.$net_iface.rp_filter = 0
+net.core.wmem_max = 12582912
+net.core.rmem_max = 12582912
+net.ipv4.tcp_rmem = 10240 87380 12582912
+net.ipv4.tcp_wmem = 10240 87380 12582912
+EOF
+fi
+
+bigecho "Updating IPTables rules..."
+
+# Check if rules need updating
+ipt_flag=0
+IPT_FILE="/etc/iptables.rules"
+if ! grep -qs "hwdsl2 VPN script" "$IPT_FILE" \
+   || ! iptables -t nat -C POSTROUTING -s "$L2TP_NET" -o "$net_iface" -j MASQUERADE 2>/dev/null \
+   || ! iptables -t nat -C POSTROUTING -s "$XAUTH_NET" -o "$net_iface" -m policy --dir out --pol none -j MASQUERADE 2>/dev/null; then
+  ipt_flag=1
+fi
+
+# Add IPTables rules for VPN
+if [ "$ipt_flag" = "1" ]; then
+  service fail2ban stop >/dev/null 2>&1
+  iptables-save > "$IPT_FILE.old-$SYS_DT"
+  iptables -I INPUT 1 -p udp --dport 1701 -m policy --dir in --pol none -j DROP
+  iptables -I INPUT 2 -m conntrack --ctstate INVALID -j DROP
+  iptables -I INPUT 3 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  iptables -I INPUT 4 -p udp -m multiport --dports 500,4500 -j ACCEPT
+  iptables -I INPUT 5 -p udp --dport 1701 -m policy --dir in --pol ipsec -j ACCEPT
+  iptables -I INPUT 6 -p udp --dport 1701 -j DROP
+  iptables -I FORWARD 1 -m conntrack --ctstate INVALID -j DROP
+  iptables -I FORWARD 2 -i "$net_iface" -o ppp+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  iptables -I FORWARD 3 -i ppp+ -o "$net_iface" -j ACCEPT
+  iptables -I FORWARD 4 -i ppp+ -o ppp+ -s "$L2TP_NET" -d "$L2TP_NET" -j ACCEPT
+  iptables -I FORWARD 5 -i "$net_iface" -d "$XAUTH_NET" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  iptables -I FORWARD 6 -s "$XAUTH_NET" -o "$net_iface" -j ACCEPT
+  # Uncomment if you wish to disallow traffic between VPN clients themselves
+  # iptables -I FORWARD 2 -i ppp+ -o ppp+ -s "$L2TP_NET" -d "$L2TP_NET" -j DROP
+  # iptables -I FORWARD 3 -s "$XAUTH_NET" -d "$XAUTH_NET" -j DROP
+  iptables -A FORWARD -j DROP
+  iptables -t nat -I POSTROUTING -s "$XAUTH_NET" -o "$net_iface" -m policy --dir out --pol none -j MASQUERADE
+  iptables -t nat -I POSTROUTING -s "$L2TP_NET" -o "$net_iface" -j MASQUERADE
+  echo "# Modified by hwdsl2 VPN script" > "$IPT_FILE"
+  iptables-save >> "$IPT_FILE"
+
+  IPT_FILE2="/etc/iptables/rules.v4"
+  if [ -f "$IPT_FILE2" ]; then
+    conf_bk "$IPT_FILE2"
+    /bin/cp -f "$IPT_FILE" "$IPT_FILE2"
+  fi
+fi
+
+bigecho "Enabling services on boot..."
+
+mkdir -p /etc/network/if-pre-up.d
+cat > /etc/network/if-pre-up.d/iptablesload <<'EOF'
+#!/bin/sh
+iptables-restore < /etc/iptables.rules
 exit 0
-END
+EOF
 
-# Ubah izin akses
-chmod +x /etc/rc.local
-
-cd
-# enable rc local
-systemctl enable rc-local
-systemctl start rc-local.service
-
-# disable ipv6
-echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
-sed -i '$ i\echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6' /etc/rc.local
-
-# install wget and curl
-apt-get update;apt-get -y install wget curl;
-
-# set time GMT +7
-ln -fs /usr/share/zoneinfo/Asia/Jakarta /etc/localtime
-
-# set repo
-sh -c 'echo "deb http://download.webmin.com/download/repository sarge contrib" > /etc/apt/sources.list.d/webmin.list'
-wget -qO - http://www.webmin.com/jcameron-key.asc | apt-key add -
-wget "http://www.dotdeb.org/dotdeb.gpg"
-wget "http://www.webmin.com/jcameron-key.asc"
-cat dotdeb.gpg | apt-key add -;rm dotdeb.gpg
-cat jcameron-key.asc | apt-key add -;rm jcameron-key.asc
-
-# remove unused
-apt-get -y --purge remove samba*;
-apt-get -y --purge remove apache2*;
-apt-get -y --purge remove sendmail*;
-apt-get -y --purge remove bind9*;
-apt-get -y --purge remove dropbear*;
-
-# update
-apt-get update; apt-get -y upgrade;
-
-# install webserver
-apt-get -y install nginx php-fpm php-mcrypt php-cli libexpat1-dev libxml-parser-perl
-
-# install essential package
-echo "mrtg mrtg/conf_mods boolean true" | debconf-set-selections
-apt-get -y install bmon iftop htop nmap axel nano iptables traceroute sysv-rc-conf dnsutils bc nethogs openvpn vnstat less screen psmisc apt-file whois ptunnel ngrep mtr git zsh mrtg snmp snmpd snmp-mibs-downloader unzip unrar rsyslog debsums rkhunter
-apt-get -y install build-essential
-
-# vnstat
-apt-get -y install vnstat
-systemctl start vnstat
-systemctl enable vnstat
-chkconfig vnstat on
-chown -R vnstat:vnstat /var/lib/vnstat
-
-# Instal DDOS Flate
-if [ -d '/usr/local/ddos' ]; then
-	echo; echo; echo "Please un-install the previous version first"
-	exit 0
-else
-	mkdir /usr/local/ddos
+for svc in fail2ban ipsec xl2tpd; do
+  update-rc.d "$svc" enable >/dev/null 2>&1
+  systemctl enable "$svc" 2>/dev/null
+done
+if ! grep -qs "hwdsl2 VPN script" /etc/rc.local; then
+  if [ -f /etc/rc.local ]; then
+    conf_bk "/etc/rc.local"
+    sed --follow-symlinks -i '/^exit 0/d' /etc/rc.local
+  else
+    echo '#!/bin/sh' > /etc/rc.local
+  fi
+cat >> /etc/rc.local <<'EOF'
+# Added by hwdsl2 VPN script
+(sleep 15
+service ipsec restart
+service xl2tpd restart
+[ -f "/usr/sbin/netplan" ] && { iptables-restore < /etc/iptables.rules; service fail2ban restart; }
+echo 1 > /proc/sys/net/ipv4/ip_forward)&
+exit 0
+EOF
 fi
-clear
-echo; echo 'Installing DOS-Deflate 0.6'; echo
-echo; echo -n 'Downloading source files...'
-wget -q -O /usr/local/ddos/ddos.conf http://www.inetbase.com/scripts/ddos/ddos.conf
-echo -n '.'
-wget -q -O /usr/local/ddos/LICENSE http://www.inetbase.com/scripts/ddos/LICENSE
-echo -n '.'
-wget -q -O /usr/local/ddos/ignore.ip.list http://www.inetbase.com/scripts/ddos/ignore.ip.list
-echo -n '.'
-wget -q -O /usr/local/ddos/ddos.sh http://www.inetbase.com/scripts/ddos/ddos.sh
-chmod 0755 /usr/local/ddos/ddos.sh
-cp -s /usr/local/ddos/ddos.sh /usr/local/sbin/ddos
-echo '...done'
-echo; echo -n 'Creating cron to run script every minute.....(Default setting)'
-/usr/local/ddos/ddos.sh --cron > /dev/null 2>&1
-echo '.....done'
-echo; echo 'Installation has completed.'
-echo 'Config file is at /usr/local/ddos/ddos.conf'
-echo 'Please send in your comments and/or suggestions to zaf@vsnl.com'
 
-# install fail2ban
-apt-get -y install fail2ban
-service fail2ban restart
-cd
+bigecho "Starting services..."
 
-# WebServer Configuration
-cd
-rm /etc/nginx/sites-enabled/default
-rm /etc/nginx/sites-available/default
-wget -O /etc/nginx/nginx.conf "https://raw.githubusercontent.com/Dreyannz/AutoScriptVPS/master/Files/Nginx/nginx.conf"
-mkdir -p /home/vps/public_html
-echo "<h1><center>AutoScriptVPS by ME</center></h1>" > /home/vps/public_html/index.html
-wget -O /etc/nginx/conf.d/vps.conf "https://raw.githubusercontent.com/Dreyannz/AutoScriptVPS/master/Files/Nginx/vps.conf"
-service nginx restart
+# Reload sysctl.conf
+sysctl -e -q -p
 
+# Update file attributes
+chmod +x /etc/rc.local /etc/network/if-pre-up.d/iptablesload
+chmod 600 /etc/ipsec.secrets* /etc/ppp/chap-secrets* /etc/ipsec.d/passwd*
 
-# ssh
-sed -i '$ i\Banner /etc/banner.txt' /etc/ssh/sshd_config
-sed -i 's/AcceptEnv/#AcceptEnv/g' /etc/ssh/sshd_config
+# Apply new IPTables rules
+iptables-restore < "$IPT_FILE"
 
-# dropbear
-apt-get -y install dropbear
-sed -i 's/NO_START=1/NO_START=0/g' /etc/default/dropbear
-sed -i 's/DROPBEAR_PORT=22/DROPBEAR_PORT=442/g' /etc/default/dropbear
-sed -i 's/DROPBEAR_EXTRA_ARGS=/DROPBEAR_EXTRA_ARGS="-p 80 -p 456 -p 777"/g' /etc/default/dropbear
-echo "/bin/false" >> /etc/shells
-echo "/usr/sbin/nologin" >> /etc/shells
-sed -i 's@DROPBEAR_BANNER=""@DROPBEAR_BANNER="/etc/banner.txt"@g' /etc/default/dropbear
-service ssh restart
-service dropbear restart
+# Restart services
+mkdir -p /run/pluto
+service fail2ban restart 2>/dev/null
+service ipsec restart 2>/dev/null
+service xl2tpd restart 2>/dev/null
 
-# install webmin
-cd
-apt-get -y install webmin
-sed -i 's/ssl=1/ssl=0/g' /etc/webmin/miniserv.conf
-apt-get -y install perl libnet-ssleay-perl openssl libauthen-pam-perl libpam-runtime libio-pty-perl apt-show-versions python
-service webmin restart
+cat <<EOF
+================================================
+IPsec VPN server is now ready for use!
+Connect to your new VPN with these details:
+Server IP: $PUBLIC_IP
+IPsec PSK: $VPN_IPSEC_PSK
+Username: $VPN_USER
+Password: $VPN_PASSWORD
+Write these down. You'll need them to connect!
+Important notes:   https://git.io/vpnnotes
+Setup VPN clients: https://git.io/vpnclients
+================================================
+EOF
 
-# Install BadVPN
-cd
-wget -O /usr/bin/badvpn-udpgw "https://github.com/Dreyannz/AutoScriptVPS/raw/master/Files/BadVPN/badvpn-udpgw"
-if [ "$OS" == "x86_64" ]; then
-  wget -O /usr/bin/badvpn-udpgw "https://github.com/Dreyannz/AutoScriptVPS/raw/master/Files/BadVPN/badvpn-udpgw64"
-fi
-sed -i '$ i\screen -AmdS badvpn badvpn-udpgw --listen-addr 127.0.0.1:7300' /etc/rc.local
-chmod +x /usr/bin/badvpn-udpgw
-screen -AmdS badvpn badvpn-udpgw --listen-addr 127.0.0.1:7300
+}
 
-# auto start badvpn single port
-sed -i '$ i\screen -AmdS badvpn badvpn-udpgw --listen-addr 127.0.0.1:7300 --max-clients 1000 --max-connections-for-client 100' /etc/rc.local
-screen -AmdS badvpn badvpn-udpgw --listen-addr 127.0.0.1:7300 --max-clients 500 --max-connections-for-client 100 &
-cd
+## Defer setup until we have the complete script
+vpnsetup "$@"
 
-# install stunnel
-apt-get install stunnel4 -y
-cat > /etc/stunnel/stunnel.conf <<-END
-cert = /etc/stunnel/stunnel.pem
-client = no
-socket = a:SO_REUSEADDR=1
-socket = l:TCP_NODELAY=1
-socket = r:TCP_NODELAY=1
-
-[dropbear]
-accept = 443
-connect = 127.0.0.1:80
-connect = 127.0.0.1:442
-connect = 127.0.0.1:456
-connect = 127.0.0.1:777
-
-[openssh]
-accept = 444
-connect = 127.0.0.1:22
-
-END
-
-# detail nama perusahaan
-country=ID
-state=Blora
-locality=Java
-organization=sshinjector.net
-organizationalunit=sshinjector.net
-commonname=sshinjector.net
-email=cs@sshinjector.net
-
-#membuat sertifikat
-openssl genrsa -out key.pem 2048
-openssl req -new -x509 -key key.pem -out cert.pem -days 1095 \
--subj "/C=$country/ST=$state/L=$locality/O=$organization/OU=$organizationalunit/CN=$commonname/emailAddress=$email"
-cat key.pem cert.pem >> /etc/stunnel/stunnel.pem
-
-# konfigurasi stunnel
-sed -i 's/ENABLED=0/ENABLED=1/g' /etc/default/stunnel4
-/etc/init.d/stunnel4 restart
-
-#Setting IPtables
-cat > /etc/iptables.up.rules <<-END
-*nat
-:PREROUTING ACCEPT [0:0]
-:OUTPUT ACCEPT [0:0]
-:POSTROUTING ACCEPT [0:0]
--A POSTROUTING -j SNAT --to-source xxxxxxxxx
--A POSTROUTING -o eth0 -j MASQUERADE
--A POSTROUTING -s 192.168.10.0/24 -o eth0 -j MASQUERADE
-COMMIT
-*filter
-:INPUT ACCEPT [0:0]
-:FORWARD ACCEPT [0:0]
-:OUTPUT ACCEPT [0:0]
-:fail2ban-ssh - [0:0]
--A INPUT -p tcp -m multiport --dports 22 -j fail2ban-ssh
--A INPUT -p ICMP --icmp-type 8 -j ACCEPT
--A INPUT -i eth0 -p tcp -m tcp --dport 110 -j ACCEPT
--A INPUT -i tun0 -j ACCEPT
--A INPUT -p tcp --dport 22  -m state --state NEW -j ACCEPT
--A INPUT -p tcp --dport 80  -m state --state NEW -j ACCEPT
--A INPUT -p tcp --dport 456  -m state --state NEW -j ACCEPT
--A INPUT -p tcp --dport 442  -m state --state NEW -j ACCEPT
--A INPUT -p tcp --dport 443  -m state --state NEW -j ACCEPT
--A INPUT -p tcp --dport 444  -m state --state NEW -j ACCEPT
--A INPUT -p tcp --dport 7300  -m state --state NEW -j ACCEPT
-
--A fail2ban-ssh -j RETURN
--A OUTPUT -p icmp --icmp-type echo-request -j DROP
--A INPUT -p tcp --tcp-flags ALL NONE -j DROP
--A INPUT -p tcp --tcp-flags ALL ALL -j DROP
--A INPUT -f -j DROP
--A INPUT -p tcp ! --syn -m state --state NEW -j DROP
--A INPUT -m string --string "BitTorrent" --algo bm --to 65535 -j DROP
--A INPUT -m string --string "BitTorrent protocol" --algo bm --to 65535 -j DROP
--A INPUT -m string --string "peer_id=" --algo bm --to 65535 -j DROP
--A INPUT -m string --string ".torrent" --algo bm --to 65535 -j DROP
--A INPUT -m string --string "announce.php?passkey=" --algo bm --to 65535 -j DROP
--A INPUT -m string --string "torrent" --algo bm --to 65535 -j DROP
--A INPUT -m string --string "announce" --algo bm --to 65535 -j DROP
--A INPUT -m string --string "info_hash" --algo bm --to 65535 -j DROP
--A INPUT -m string --string "peer_id" --algo kmp --to 65535 -j DROP
--A INPUT -m string --string "BitTorrent" --algo kmp --to 65535 -j DROP
--A INPUT -m string --string "BitTorrent protocol" --algo kmp --to 65535 -j DROP
--A INPUT -m string --string "bittorrent-announce" --algo kmp --to 65535 -j DROP
--A INPUT -m string --string "announce.php?passkey=" --algo kmp --to 65535 -j DROP
--A INPUT -m string --string "find_node" --algo kmp --to 65535 -j DROP
--A INPUT -m string --string "info_hash" --algo kmp --to 65535 -j DROP
--A INPUT -m string --string "get_peers" --algo kmp --to 65535 -j DROP
--A INPUT -m string --string "announce" --algo kmp --to 65535 -j DROP
--A INPUT -m string --string "announce_peers" --algo kmp --to 65535 -j DROP
--t nat -A POSTROUTING -o eth0 -j MASQUERADE
--I OUTPUT -p tcp --dport 1723 -j ACCEPT
--A OUTPUT -p tcp --dport 6881:6889 -j DROP
--A FORWARD -m string --algo bm --string "BitTorrent" -j DROP
--A FORWARD -p tcp --dport 6881:6889 -j DROP
--D FORWARD -m string --algo bm --string "BitTorrent" -j LOGDROP
--D FORWARD -m string --algo bm --string "BitTorrent protocol" -j LOGDROP
--D FORWARD -m string --algo bm --string "peer_id=" -j LOGDROP
--D FORWARD -m string --algo bm --string ".torrent" -j LOGDROP
--D FORWARD -m string --algo bm --string "announce.php?passkey=" -j LOGDROP
--D FORWARD -m string --algo bm --string "torrent" -j LOGDROP
--D FORWARD -m string --algo bm --string "announce" -j LOGDROP
--D FORWARD -m string --algo bm --string "info_hash" -j LOGDROP
--A FORWARD -m string --string "get_peers" --algo bm -j DROP
--A FORWARD -m string --string "announce_peer" --algo bm -j LOGDROP
--A FORWARD -m string --string "find_node" --algo bm -j LOGDROP
--A FORWARD -p udp -m string --algo bm --string "BitTorrent" -j DROP
--A FORWARD -p udp -m string --algo bm --string "BitTorrent protocol" -j DROP
--A FORWARD -p udp -m string --algo bm --string "peer_id=" -j DROP
--A FORWARD -p udp -m string --algo bm --string ".torrent" -j DROP
--A FORWARD -p udp -m string --algo bm --string "announce.php?passkey=" -j DROP
--A FORWARD -p udp -m string --algo bm --string "torrent" -j DROP 
--A FORWARD -p udp -m string --algo bm --string "announce" -j DROP
--A FORWARD -p udp -m string --algo bm --string "info_hash" -j DROP 
--A FORWARD -p udp -m string --algo bm --string "tracker" -j DROP 
--A INPUT -p udp -m string --algo bm --string "BitTorrent" -j DROP 
--A INPUT -p udp -m string --algo bm --string "BitTorrent protocol" -j DROP iptables -A INPUT -p udp -m string --algo bm --string "peer_id=" -j DROP 
--A INPUT -p udp -m string --algo bm --string ".torrent" -j DROP 
--A INPUT -p udp -m string --algo bm --string "announce.php?passkey=" -j DROP iptables -A INPUT -p udp -m string --algo bm --string "torrent" -j DROP 
--A INPUT -p udp -m string --algo bm --string "announce" -j DROP 
--A INPUT -p udp -m string --algo bm --string "info_hash" -j DROP 
--A INPUT -p udp -m string --algo bm --string "tracker" -j DROP 
--I INPUT -p udp -m string --algo bm --string "BitTorrent" -j DROP 
--I INPUT -p udp -m string --algo bm --string "BitTorrent protocol" -j DROP iptables -I INPUT -p udp -m string --algo bm --string "peer_id=" -j DROP 
--I INPUT -p udp -m string --algo bm --string ".torrent" -j DROP 
--I INPUT -p udp -m string --algo bm --string "announce.php?passkey=" -j DROP iptables -I INPUT -p udp -m string --algo bm --string "torrent" -j DROP 
--I INPUT -p udp -m string --algo bm --string "announce" -j DROP
--I INPUT -p udp -m string --algo bm --string "info_hash" -j DROP 
--I INPUT -p udp -m string --algo bm --string "tracker" -j DROP 
--D INPUT -p udp -m string --algo bm --string "BitTorrent" -j DROP 
--D INPUT -p udp -m string --algo bm --string "BitTorrent protocol" -j DROP iptables -D INPUT -p udp -m string --algo bm --string "peer_id=" -j DROP 
--D INPUT -p udp -m string --algo bm --string ".torrent" -j DROP 
--D INPUT -p udp -m string --algo bm --string "announce.php?passkey=" -j DROP iptables -D INPUT -p udp -m string --algo bm --string "torrent" -j DROP 
--D INPUT -p udp -m string --algo bm --string "announce" -j DROP 
--D INPUT -p udp -m string --algo bm --string "info_hash" -j DROP 
--D INPUT -p udp -m string --algo bm --string "tracker" -j DROP 
--I OUTPUT -p udp -m string --algo bm --string "BitTorrent" -j DROP 
--I OUTPUT -p udp -m string --algo bm --string "BitTorrent protocol" -j DROP iptables -I OUTPUT -p udp -m string --algo bm --string "peer_id=" -j DROP 
--I OUTPUT -p udp -m string --algo bm --string ".torrent" -j DROP 
--I OUTPUT -p udp -m string --algo bm --string "announce.php?passkey=" -j DROP iptables -I OUTPUT -p udp -m string --algo bm --string "torrent" -j DROP 
--I OUTPUT -p udp -m string --algo bm --string "announce" -j DROP 
--I OUTPUT -p udp -m string --algo bm --string "info_hash" -j DROP 
--I OUTPUT -p udp -m string --algo bm --string "tracker" -j DROP
--D INPUT -m string --algo bm --string "BitTorrent" -j DROP 
--D INPUT -m string --algo bm --string "BitTorrent protocol" -j DROP 
--D INPUT -m string --algo bm --string "peer_id=" -j DROP
--D INPUT -m string --algo bm --string ".torrent" -j DROP 
--D INPUT -m string --algo bm --string "announce.php?passkey=" -j DROP 
--D INPUT -m string --algo bm --string "torrent" -j DROP 
--D INPUT -m string --algo bm --string "announce" -j DROP
--D INPUT -m string --algo bm --string "info_hash" -j DROP
--D INPUT -m string --algo bm --string "tracker" -j DROP 
--D OUTPUT -m string --algo bm --string "BitTorrent" -j DROP
--D OUTPUT -m string --algo bm --string "BitTorrent protocol" -j DROP
--D OUTPUT -m string --algo bm --string "peer_id=" -j DROP
--D OUTPUT -m string --algo bm --string ".torrent" -j DROP
--D OUTPUT -m string --algo bm --string "announce.php?passkey=" -j DROP 
--D OUTPUT -m string --algo bm --string "torrent" -j DROP
--D OUTPUT -m string --algo bm --string "announce" -j DROP
--D OUTPUT -m string --algo bm --string "info_hash" -j DROP
--D OUTPUT -m string --algo bm --string "tracker" -j DROP 
--D FORWARD -m string --algo bm --string "BitTorrent" -j DROP
--D FORWARD -m string --algo bm --string "BitTorrent protocol" -j DROP
--D FORWARD -m string --algo bm --string "peer_id=" -j DROP
--D FORWARD -m string --algo bm --string ".torrent" -j DROP
--D FORWARD -m string --algo bm --string "announce.php?passkey=" -j DROP
--D FORWARD -m string --algo bm --string "torrent" -j DROP
--D FORWARD -m string --algo bm --string "announce" -j DROP
--D FORWARD -m string --algo bm --string "info_hash" -j DROP
--D FORWARD -m string --algo bm --string "tracker" -j DROP
-COMMIT
-*raw
-:PREROUTING ACCEPT [0:0]
-:OUTPUT ACCEPT [0:0]
-COMMIT
-*mangle
-:PREROUTING ACCEPT [0:0]
-:INPUT ACCEPT [0:0]
-:FORWARD ACCEPT [0:0]
-:OUTPUT ACCEPT [0:0]
-:POSTROUTING ACCEPT [0:0]
-COMMIT
-END
-sed -i $MYIP2 /etc/iptables.up.rules;
-iptables-restore < /etc/iptables.up.rules
-
-# common password debian 
-wget -O /etc/pam.d/common-password "https://raw.githubusercontent.com/idtunnel/sshtunnel/master/debian9/common-password-deb9"
-chmod +x /etc/pam.d/common-password
-
-wget -O /usr/bin/add-user https://raw.githubusercontent.com/idtunnel/sshtunnel/master/debian9/usernew.sh
-chmod +x /usr/bin/add-user
-
-echo "0 0 * * * root /sbin/reboot" > /etc/cron.d/reboot
-
-# Finishing
-cd
-chown -R www-data:www-data /home/vps/public_html
-service nginx start
-service openvpn restart
-service cron restart
-service ssh restart
-service dropbear restart
-service webmin restart
-rm -rf ~/.bash_history && history -c
-rm -f /root/AutoScriptVPS.sh
-echo "unset HISTFILE" >> /etc/profil
+exit 0
