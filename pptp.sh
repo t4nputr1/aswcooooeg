@@ -10,15 +10,15 @@ if [[ $USER != 'root' ]]; then
 fi
 clear
 
+MYIP=`ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0' | head -n1`;
+#MYIP=$(wget -qO- ipv4.icanhazip.com)
+
 # get the VPS IP
 #ip=`ifconfig venet0:0 | grep 'inet addr' | awk {'print $2'} | sed s/.*://`
-MYIP=`ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0' | head -n1`;
-#MYIP=$(ifconfig | grep 'inet addr:' | grep -v inet6 | grep -vE '127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d: -f2 | awk '{ print $1}' | head -1)
-if [ "$MYIP" = "" ]; then
-	MYIP=$(wget -qO- ipv4.icanhazip.com)
+ip=$(ifconfig | grep 'inet addr:' | grep -v inet6 | grep -vE '127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d: -f2 | awk '{ print $1}' | head -1)
+if [ "$ip" = "" ]; then
+	ip=$(wget -qO- ipv4.icanhazip.com)
 fi
-#MYIP=$(wget -qO- ipv4.icanhazip.com)
-IP=$(wget -qO- ipv4.icanhazip.com)
 
 u="abcde"
 p="abcde"
