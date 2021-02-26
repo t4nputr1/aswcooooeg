@@ -8,10 +8,14 @@ if [[ $USER != 'root' ]]; then
 	echo "Maaf, Anda harus menjalankan ini sebagai root"
 	exit
 fi
-clear
-
 MYIP=`ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0' | head -n1`;
 #MYIP=$(wget -qO- ipv4.icanhazip.com)
+clear
+# go to root
+cd
+
+u="abcde"
+p="abcde"
 
 # get the VPS IP
 #ip=`ifconfig venet0:0 | grep 'inet addr' | awk {'print $2'} | sed s/.*://`
@@ -19,10 +23,6 @@ ip=$(ifconfig | grep 'inet addr:' | grep -v inet6 | grep -vE '127\.[0-9]{1,3}\.[
 if [ "$ip" = "" ]; then
 	ip=$(wget -qO- ipv4.icanhazip.com)
 fi
-
-u="abcde"
-p="abcde"
-
 
 echo
 echo "######################################################"
@@ -96,6 +96,6 @@ sleep 5
 echo
 echo "######################################################"
 echo "Server setup complete!"
-echo "Connect to your VPS at $IP with these credentials:"
+echo "Connect to your VPS at $ip with these credentials:"
 echo "Username:$u ##### Password: $p"
 echo "######################################################"
