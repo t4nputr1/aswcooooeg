@@ -515,6 +515,16 @@ Note: A newer version of Libreswan ($swan_ver_latest) is available.
 EOF
 fi
 
+echo "#############################################"
+echo "Menambahkan Perintah L2tp/IPsec"
+cd /usr/bin
+wget -O create-account-l2tp "https://localhost/create-account-l2tp.sh"
+wget -O delete--account-l2tp "https://localhost/delete--account-l2tp.sh"
+chmod +x create--account-l2tp
+chmod +x delete--account-shadowsocks
+cd
+rm -f /root/installer-l2tp.sh
+
 cat <<EOF
 ================================================
 IPsec VPN server is now ready for use!
