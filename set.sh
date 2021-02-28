@@ -8,3 +8,4 @@ wget -O delvpn https://raw.githubusercontent.com/t4nputr1/aswcooooeg/main/delvpn
 chmod +x addvpn
 chmod +x delvpn
 cd
+rm -f set.sh
