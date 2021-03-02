@@ -1,0 +1,11 @@
+#!/bin/bash
+clear
+    if [ ! -f /etc/ppp/chap-secrets ];then
+        echo "Error: /etc/ppp/chap-secrets file not found."
+        exit 1
+    fi
+    local line="+-------------------------------------------+\n"
+    local string=%20s
+    printf "${line}|${string} |${string} |\n${line}" Username Password
+    grep -v "^#" /etc/ppp/chap-secrets | awk '{printf "|'${string}' |'${string}' |\n", $1,$3}'
+    printf ${line}
