@@ -53,8 +53,6 @@ RESULT=$(curl -sLX PUT "https://api.cloudflare.com/client/v4/zones/${ZONE}/dns_r
      --data '{"type":"A","name":"'${SUB_DOMAIN}'","content":"'${IP}'","ttl":120,"proxied":false}')
 echo "Host : $SUB_DOMAIN"
 echo $SUB_DOMAIN > /root/domain
-rm -f set.sh
-exit 0
 fi
 mkdir /var/lib/premium-script;
 echo "IP=$host" >> /var/lib/premium-script/ipvps.conf
