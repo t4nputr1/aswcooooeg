@@ -10,7 +10,6 @@ red='\e[1;31m'
 green='\e[0;32m'
 NC='\e[0m'
 MYIP=$(wget -qO- icanhazip.com);
-rm -f setu.sh
 mkdir /var/lib/premium-script;
 echo "Enter the VPS Subdomain Hostname, if not available, please click Enter"
 read -p "Hostname: " host
