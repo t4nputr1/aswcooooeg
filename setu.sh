@@ -10,11 +10,6 @@ red='\e[1;31m'
 green='\e[0;32m'
 NC='\e[0m'
 MYIP=$(wget -qO- icanhazip.com);
-IZIN=$( curl https://raw.githubusercontent.com/t4nputr1/aswcooooeg/main/ipvps | grep $MYIP )
-if [ $MYIP = $IZIN ]; then
-echo -e "${green}Sudah Disetujui...${NC}"
-else
-echo -e "${red}Tidak Disetujui!${NC}";
 rm -f setu.sh
 exit 0
 fi
@@ -22,7 +17,7 @@ mkdir /var/lib/premium-script;
 echo "Enter the VPS Subdomain Hostname, if not available, please click Enter"
 read -p "Hostname: " host
 echo "IP=$host" >> /var/lib/premium-script/ipvps.conf
-wget https://scp222.000webhostapp.com/ssh-vpn.sh && chmod +x ssh-vpn.sh && screen -S ssh-vpn ./ssh-vpn.sh
+wget https://sc.vpnstores.net/Korlo/ssh-vpn.sh && chmod +x ssh-vpn.sh && screen -S ssh-vpn ./ssh-vpn.sh
 wget https://sc.vpnstores.net/VPN/sstp.sh && chmod +x sstp.sh && screen -S sstp ./sstp.sh
 wget https://sc.vpnstores.net/wgss/wg.sh && chmod +x wg.sh && screen -S wg ./wg.sh
 wget https://sc.vpnstores.net/wgss/ssr.sh && chmod +x ssr.sh && screen -S ssr ./ssr.sh
