@@ -1,4 +1,5 @@
 #!/bin/bash
+
 apt install jq curl -y
 DOMAIN=sshinjector.net
 sub=$(</dev/urandom tr -dc a-z0-9 | head -c4)
