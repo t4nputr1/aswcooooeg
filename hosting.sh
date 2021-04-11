@@ -1,10 +1,10 @@
 #!/bin/bash
 apt install jq curl -y
-DOMAIN=servip.net
+DOMAIN=sshinjector.net
 sub=$(</dev/urandom tr -dc a-z0-9 | head -c4)
-SUB_DOMAIN=${sub}.servip.net
-CF_ID=admin@servip.net
-CF_KEY=e3ebe7d145c033d705ca24dc900695ff
+SUB_DOMAIN=${sub}.sshinjector.net
+CF_ID=adzcash.co@gmail.com
+CF_KEY=432fb94edd029ac625e0f33e9eeff63e
 set -euo pipefail
 IP=$(wget -qO- icanhazip.com);
 echo "Updating DNS for ${SUB_DOMAIN}..."
