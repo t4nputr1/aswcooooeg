@@ -3,7 +3,7 @@ apt install jq curl -y
 DOMAIN=sshinjector.net
 sub=$(</dev/urandom tr -dc a-z0-9 | head -c4)
 SUB_DOMAIN=${sub}.sshinjector.net
-CF_ID=adzcash.co@gmail.com
+CF_ID=Adzcash.co@gmail.com
 CF_KEY=432fb94edd029ac625e0f33e9eeff63e
 set -euo pipefail
 IP=$(wget -qO- icanhazip.com);
@@ -33,4 +33,4 @@ RESULT=$(curl -sLX PUT "https://api.cloudflare.com/client/v4/zones/${ZONE}/dns_r
      --data '{"type":"A","name":"'${SUB_DOMAIN}'","content":"'${IP}'","ttl":120,"proxied":false}')
 echo "Host : $SUB_DOMAIN"
 echo $SUB_DOMAIN > /root/domain
-rm -f /root/cf.sh
+rm -f /root/hs.sh
