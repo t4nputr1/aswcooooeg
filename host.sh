@@ -1,6 +1,6 @@
 #!/bin/bash
 apt install jq curl -y
-DOMAIN=myvpnkuy.xyz
+DOMAIN=servip.net
 sub=$(</dev/urandom tr -dc a-z0-9 | head -c4)
 SUB_DOMAIN=${sub}.servip.net
 CF_ID=admin@servip.net
