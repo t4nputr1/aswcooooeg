@@ -7,6 +7,7 @@ OS=`uname -m`;
 MYIP=$(wget -qO- ipv4.icanhazip.com);
 MYIP2="s/xxxxxxxxx/$MYIP/g";
 ANU=$(ip -o $ANU -4 route show to default | awk '{print $5}');
+
 #install OpenVPN
 apt install openvpn easy-rsa -y
 apt install openssl iptables iptables-persistent -y 
@@ -81,7 +82,7 @@ user nobody
 group nogroup
 persist-key
 persist-tun
-status openvpn-status.log
+status openvpn-tcp.log
 log openvpn.log
 verb 3
 cipher AES-128-CBC
@@ -114,7 +115,7 @@ user nobody
 group nogroup
 persist-key
 persist-tun
-status openvpn-status.log
+status openvpn-tcp.log
 log openvpn.log
 verb 3
 cipher AES-128-CBC
@@ -147,7 +148,7 @@ user nobody
 group nogroup
 persist-key
 persist-tun
-status openvpn-status.log
+status openvpn-udp.log
 log openvpn.log
 verb 3
 cipher AES-128-CBC
