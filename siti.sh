@@ -29,6 +29,7 @@ echo "Tolong masukan domain yang sudah dipointing agar v2ray service work"
 read -p "Hostname / Domain: " host
 echo "IP=$host" >> /var/lib/premium-script/ipvps.conf
 echo "$host" >> /etc/v2ray/domain
+echo "$host" >>  /root/domain
 
 wget https://raw.githubusercontent.com/lesta-1/sc/main/cf.sh && chmod +x cf.sh && ./cf.sh
 #install ssh ovpn
