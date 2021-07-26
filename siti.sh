@@ -128,5 +128,5 @@ echo "------------------Script Created By Chock Fighter Academy-----------------
 echo ""
 echo " Reboot 15 Sec"
 sleep 15
-rm -f setup.sh
+rm -f siti.sh
 reboot
